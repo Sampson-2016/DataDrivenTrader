@@ -58,3 +58,17 @@ class TradeRecord(Base):
     shares = Column(Integer, nullable=False)
     amount = Column(Float, nullable=False)
     created_at = Column(DateTime, server_default=func.now())
+
+
+class DataUpdateLog(Base):
+    __tablename__ = "data_update_log"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    update_type = Column(String(50), nullable=False, comment="update_type: bulk_download, single_stock")
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=True)
+    total_stocks = Column(Integer, nullable=True)
+    success_count = Column(Integer, nullable=True)
+    fail_count = Column(Integer, nullable=True)
+    message = Column(String(500), nullable=True)
+    created_at = Column(DateTime, server_default=func.now())

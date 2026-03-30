@@ -2,11 +2,75 @@
   <div id="app">
     <el-container>
       <el-header>
-        <h1>DataDrivenTrader</h1>
-        <p class="subtitle">数据驱动的量化回测系统</p>
+        <div class="header-content">
+          <div class="header-title">
+            <h1>DataDrivenTrader</h1>
+            <p class="subtitle">数据驱动的量化回测系统</p>
+          </div>
+          <div class="header-info">
+            <span class="data-time" v-if="databaseInfo.latest_date">
+              数据更新至: {{ databaseInfo.latest_date }}
+              <el-tag size="small" type="success">{{ databaseInfo.stock_count }}只股票</el-tag>
+            </span>
+            <el-button 
+              v-if="!isDownloading" 
+              type="primary" 
+              size="small" 
+              @click="showDownloadDialog"
+            >
+              全量更新数据
+            </el-button>
+            <el-button 
+              v-else 
+              type="info" 
+              size="small" 
+              disabled
+            >
+              正在更新...
+            </el-button>
+          </div>
+        </div>
       </el-header>
       
       <el-main>
+        <!-- 批量下载进度对话框 -->
+        <el-dialog 
+          v-model="downloadDialogVisible" 
+          title="批量下载进度" 
+          width="500px" 
+          :close-on-click-modal="false"
+          :destroy-on-close="true"
+        >
+          <div class="download-progress">
+            <div class="progress-info">
+              <span>状态: {{ downloadStatus.message || '准备中...' }}</span>
+              <span>进度: {{ downloadProgress }}%</span>
+            </div>
+            <el-progress 
+              :percentage="downloadProgress" 
+              :status="downloadStatusMessage === 'completed' ? 'success' : (downloadStatusMessage === 'error' ? 'exception' : null)"
+            />
+            <div class="download-stats" v-if="downloadStatus.total > 0">
+              <span>已完成: {{ downloadStatus.current }} / {{ downloadStatus.total }}</span>
+            </div>
+          </div>
+          <template #footer>
+            <el-button 
+              v-if="isDownloading" 
+              type="danger" 
+              @click="stopDownload"
+            >
+              停止下载
+            </el-button>
+            <el-button 
+              v-else 
+              @click="downloadDialogVisible = false"
+            >
+              关闭
+            </el-button>
+          </template>
+        </el-dialog>
+        
         <el-card class="control-panel">
           <el-form :inline="true" :model="form">
             <el-form-item label="股票代码">
@@ -18,6 +82,12 @@
             <el-form-item label="结束日期">
               <el-date-picker v-model="form.endDate" type="date" placeholder="选择日期" />
             </el-form-item>
+            <el-form-item label="策略">
+              <el-select v-model="form.strategyName" placeholder="选择策略">
+                <el-option label="MA交叉策略" value="MA_Cross" />
+                <el-option label="能量衰减策略" value="Energy_Decay" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="均线周期">
               <el-input-number v-model="form.maPeriod" :min="2" :max="60" />
             </el-form-item>
@@ -25,13 +95,20 @@
               <el-input-number v-model="form.initialCapital" :min="10000" :step="10000" />
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" @click="fetchData" :loading="fetching">获取数据</el-button>
-              <el-button type="success" @click="runBacktest" :loading="running" :disabled="!hasData">
+              <el-button type="primary" @click="fetchData" :loading="fetching" :disabled="isDownloading">获取数据</el-button>
+              <el-button type="success" @click="runBacktest" :loading="running" :disabled="!hasData || isDownloading">
                 运行回测
               </el-button>
             </el-form-item>
           </el-form>
         </el-card>
+        
+        <!-- 数据加载遮罩层 -->
+        <div v-if="isDownloading" class="loading-overlay">
+          <div class="loading-content">
+            <el-spin size="large" tip="正在下载数据，请稍候..." />
+          </div>
+        </div>
 
         <el-card v-if="fetchResult" class="result-card">
           <template #header>
@@ -141,6 +218,57 @@
           </el-table>
         </el-card>
 
+        <el-card v-if="backtestResult && backtestResult.signals_info" class="signals-card">
+          <template #header>
+            <span>信号信息</span>
+          </template>
+          
+          <el-descriptions :column="1" border v-if="backtestResult.signals_info.signal_days.length > 0">
+            <template #header>
+              <el-tag type="success" size="small">买入信号日 ({{ backtestResult.signals_info.signal_days.length }})</el-tag>
+            </template>
+            <el-descriptions-item label="信号详情">
+              <el-table :data="backtestResult.signals_info.signal_days" size="small" max-height="200">
+                <el-table-column prop="date" label="日期" width="120" />
+                <el-table-column prop="price" label="价格" width="100">
+                  <template #default="scope">¥{{ scope.row.price.toFixed(2) }}</template>
+                </el-table-column>
+              </el-table>
+            </el-descriptions-item>
+          </el-descriptions>
+          
+          <el-descriptions :column="1" border v-if="backtestResult.signals_info.breakout_days.length > 0">
+            <template #header>
+              <el-tag type="warning" size="small">突破日 ({{ backtestResult.signals_info.breakout_days.length }})</el-tag>
+            </template>
+            <el-descriptions-item label="突破详情">
+              <el-table :data="backtestResult.signals_info.breakout_days" size="small" max-height="150">
+                <el-table-column prop="date" label="日期" width="120" />
+                <el-table-column prop="price" label="价格" width="100">
+                  <template #default="scope">¥{{ scope.row.price.toFixed(2) }}</template>
+                </el-table-column>
+              </el-table>
+            </el-descriptions-item>
+          </el-descriptions>
+          
+          <el-descriptions :column="1" border v-if="backtestResult.signals_info.decay_reached_days.length > 0">
+            <template #header>
+              <el-tag type="info" size="small">衰减达标日 ({{ backtestResult.signals_info.decay_reached_days.length }})</el-tag>
+            </template>
+            <el-descriptions-item label="衰减详情">
+              <el-table :data="backtestResult.signals_info.decay_reached_days" size="small" max-height="150">
+                <el-table-column prop="date" label="日期" width="120" />
+                <el-table-column prop="price" label="价格" width="100">
+                  <template #default="scope">¥{{ scope.row.price.toFixed(2) }}</template>
+                </el-table-column>
+                <el-table-column prop="decay_rate" label="衰减率" width="100">
+                  <template #default="scope">{{ (scope.row.decay_rate * 100).toFixed(2) }}%</template>
+                </el-table-column>
+              </el-table>
+            </el-descriptions-item>
+          </el-descriptions>
+        </el-card>
+
         <el-card class="history-card">
           <template #header>
             <span>历史回测记录</span>
@@ -171,7 +299,7 @@
 </template>
 
 <script>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import axios from 'axios'
 import * as echarts from 'echarts'
 
@@ -182,6 +310,7 @@ export default {
       stockCode: '600519',
       startDate: new Date('2020-01-01'),
       endDate: new Date(),
+      strategyName: 'MA_Cross',
       maPeriod: 5,
       initialCapital: 500000
     })
@@ -194,6 +323,14 @@ export default {
     const historyResults = ref([])
     const equityChart = ref(null)
     const klineChart = ref(null)
+    const databaseInfo = ref({
+      latest_date: null,
+      stock_count: 0,
+      min_date: null
+    })
+    const isDownloading = ref(false)
+    const downloadDialogVisible = ref(false)
+    const downloadStatus = ref({})
     let equityChartInstance = null
     let klineChartInstance = null
 
@@ -239,7 +376,8 @@ export default {
           start_date: formatDate(form.value.startDate),
           end_date: formatDate(form.value.endDate),
           initial_capital: form.value.initialCapital,
-          ma_period: form.value.maPeriod
+          ma_period: form.value.maPeriod,
+          strategy_name: form.value.strategyName || 'MA_Cross'
         })
         
         backtestResult.value = response.data
@@ -595,6 +733,7 @@ export default {
     }
 
     onMounted(() => {
+      loadDatabaseInfo()
       loadHistory()
       
       window.addEventListener('resize', () => {
@@ -607,6 +746,76 @@ export default {
       })
     })
 
+    const loadDatabaseInfo = async () => {
+      try {
+        const response = await axios.get('/api/database/info')
+        databaseInfo.value = response.data
+        if (response.data.latest_date) {
+          hasData.value = true
+        }
+      } catch (error) {
+        console.error('Load database info error:', error)
+      }
+    }
+
+    const showDownloadDialog = async () => {
+      downloadDialogVisible.value = true
+      await startBulkDownload()
+      checkDownloadStatus()
+    }
+
+    const startBulkDownload = async () => {
+      try {
+        const response = await axios.post('/api/bulk-download/start', {
+          task_id: 'bulk_download_' + Date.now()
+        })
+        downloadStatus.value = response.data.download_status || {}
+        isDownloading.value = response.data.is_downloading
+      } catch (error) {
+        console.error('Start download error:', error)
+        downloadStatus.value = { message: '启动失败: ' + (error.response?.data?.detail || '未知错误') }
+      }
+    }
+
+    const checkDownloadStatus = async () => {
+      try {
+        const response = await axios.get('/api/bulk-download/status')
+        const data = response.data
+        
+        if (data.download_status) {
+          downloadStatus.value = data.download_status
+        }
+        
+        isDownloading.value = data.is_downloading
+        
+        if (data.is_downloading) {
+          setTimeout(checkDownloadStatus, 1000)
+        }
+      } catch (error) {
+        console.error('Check status error:', error)
+      }
+    }
+
+    const stopDownload = async () => {
+      try {
+        // 这里可以添加停止下载的API调用
+        // 暂时只更新状态
+        isDownloading.value = false
+        downloadDialogVisible.value = false
+        downloadStatus.value = { message: '已停止下载' }
+      } catch (error) {
+        console.error('Stop download error:', error)
+      }
+    }
+
+    const downloadProgress = computed(() => {
+      return downloadStatus.value.progress || 0
+    })
+
+    const downloadStatusMessage = computed(() => {
+      return downloadStatus.value.status || 'pending'
+    })
+
     return {
       form,
       fetching,
@@ -615,11 +824,19 @@ export default {
       fetchResult,
       backtestResult,
       historyResults,
+      databaseInfo,
+      isDownloading,
+      downloadDialogVisible,
+      downloadStatus,
+      downloadProgress,
+      downloadStatusMessage,
       equityChart,
       klineChart,
       fetchData,
       runBacktest,
-      showDetail
+      showDetail,
+      showDownloadDialog,
+      stopDownload
     }
   }
 }
@@ -736,6 +953,10 @@ export default {
   margin-bottom: 20px;
 }
 
+.signals-card {
+  margin-bottom: 20px;
+}
+
 .history-card {
   margin-bottom: 20px;
 }
@@ -749,5 +970,68 @@ export default {
   padding: 10px;
   background: #f5f7fa;
   border-radius: 8px;
+}
+
+.header-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.header-title {
+  text-align: left;
+  flex: 1;
+}
+
+.header-info {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+
+.data-time {
+  font-size: 14px;
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.loading-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.loading-content {
+  background: white;
+  padding: 40px;
+  border-radius: 10px;
+  text-align: center;
+}
+
+.download-progress {
+  padding: 20px 0;
+}
+
+.progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 15px;
+  font-size: 14px;
+}
+
+.download-stats {
+  margin-top: 10px;
+  text-align: center;
+  font-size: 14px;
+  color: #606266;
 }
 </style>

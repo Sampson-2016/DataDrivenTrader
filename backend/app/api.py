@@ -1,10 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 from datetime import date
 
-from .database import get_db, init_db
-from .models import StockDaily, BacktestResult, TradeRecord
+from .database import get_db, init_db, SessionLocal
+from .models import StockDaily, BacktestResult, TradeRecord, DataUpdateLog
 from .schemas import (
     StockDailyResponse, 
     BacktestRequest, 
@@ -12,10 +12,18 @@ from .schemas import (
     BacktestDetailResponse,
     EquityCurvePoint,
     TradeRecordResponse,
-    KLineData
+    KLineData,
+    StrategyInfo,
+    SignalInfo,
+    StrategyListResponse,
+    BulkDownloadRequest,
+    BulkDownloadStatus,
+    DatabaseInfo
 )
 from .data_fetcher import data_fetcher
 from .backtest_engine import backtest_engine
+from .strategies.base import StrategyRegistry
+from .bulk_download.manager import bulk_download_manager
 
 router = APIRouter()
 
@@ -56,36 +64,92 @@ async def run_backtest(
     request: BacktestRequest,
     db: Session = Depends(get_db)
 ):
+    # 获取数据库中的数据范围
+    db_info = get_database_info()
+    latest_date = db_info.latest_date
+    
+    if not latest_date:
+        raise HTTPException(status_code=400, detail="No data in database. Please download data first.")
+    
+    # 智能时间范围调整
+    adjusted_start_date = request.start_date
+    adjusted_end_date = request.end_date
+    
+    # 如果用户选择的开始日期大于数据库最新日期，不允许回测
+    if adjusted_start_date > date.fromisoformat(latest_date):
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Start date ({adjusted_start_date}) is later than database latest date ({latest_date}). Please select an earlier start date or download more data."
+        )
+    
+    # 如果用户选择的结束日期大于数据库最新日期，调整为数据库最新日期
+    if adjusted_end_date > date.fromisoformat(latest_date):
+        adjusted_end_date = date.fromisoformat(latest_date)
+    
     stock_data = data_fetcher.get_stock_data_from_db(
         db, 
         request.stock_code,
-        request.start_date,
-        request.end_date
+        adjusted_start_date,
+        adjusted_end_date
     )
     
     if not stock_data:
-        raise HTTPException(status_code=404, detail="No stock data found. Please fetch data first.")
+        raise HTTPException(
+            status_code=404, 
+            detail=f"No stock data found for {request.stock_code} in date range [{adjusted_start_date}, {adjusted_end_date}]. Please download data first."
+        )
     
     try:
-        result, trades, equity_curve = backtest_engine.run_backtest(
+        from .strategies.energy_decay import EnergyDecayStrategy
+        from .strategies.ma_cross import MACrossStrategy
+        
+        strategy_map = {
+            'MA_Cross': MACrossStrategy,
+            'Energy_Decay': EnergyDecayStrategy
+        }
+        
+        strategy_class = strategy_map.get(request.strategy_name, MACrossStrategy)
+        strategy = strategy_class(initial_capital=request.initial_capital)
+        
+        if request.strategy_name == 'MA_Cross':
+            strategy.ma_period = request.ma_period
+        
+        result = strategy.run_backtest(
             stock_data,
-            ma_period=request.ma_period,
-            initial_capital=request.initial_capital
+            market_cap=request.market_cap
         )
         
         backtest_result = backtest_engine.save_backtest_result(
             db,
             request.stock_code,
-            f"MA{request.ma_period}_Cross",
+            result.strategy_name,
             request.start_date,
             request.end_date,
-            result,
-            trades
+            {
+                'initial_capital': result.initial_capital,
+                'final_capital': result.final_capital,
+                'total_return': result.total_return,
+                'annual_return': result.annual_return,
+                'max_drawdown': result.max_drawdown,
+                'win_rate': result.win_rate,
+                'total_trades': result.total_trades,
+                'profit_trades': result.profit_trades,
+                'loss_trades': result.loss_trades
+            },
+            []
         )
         
         trade_records = db.query(TradeRecord).filter(
             TradeRecord.backtest_id == backtest_result.id
         ).all()
+        
+        signals_info = SignalInfo(
+            breakout_days=result.signals_info.get('breakout_days', []) if result.signals_info else [],
+            decay_reached_days=result.signals_info.get('decay_reached_days', []) if result.signals_info else [],
+            signal_days=result.signals_info.get('signal_days', []) if result.signals_info else [],
+            volume_check_days=result.signals_info.get('volume_check_days', []) if result.signals_info else [],
+            price_check_days=result.signals_info.get('price_check_days', []) if result.signals_info else []
+        )
         
         return BacktestDetailResponse(
             result=BacktestResultResponse(
@@ -116,7 +180,7 @@ async def run_backtest(
                 date=e['date'],
                 equity=e['equity'],
                 benchmark=e['benchmark']
-            ) for e in equity_curve],
+            ) for e in result.equity_curve],
             kline_data=[KLineData(
                 date=s.trade_date,
                 open=s.open_price,
@@ -124,7 +188,8 @@ async def run_backtest(
                 high=s.high_price,
                 low=s.low_price,
                 volume=s.volume
-            ) for s in stock_data]
+            ) for s in stock_data],
+            signals_info=signals_info
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -226,3 +291,70 @@ async def get_backtest_detail(
             benchmark=e['benchmark']
         ) for e in equity_curve]
     )
+
+
+@router.get("/strategies", response_model=StrategyListResponse)
+async def list_strategies():
+    """获取所有可用策略"""
+    strategies = StrategyRegistry.get_all_strategies()
+    strategy_list = []
+    
+    for s in strategies:
+        try:
+            strategy_instance = s['class']()
+            strategy_list.append(StrategyInfo(
+                name=s['name'],
+                params=strategy_instance.get_params()
+            ))
+        except Exception:
+            continue
+    
+    return StrategyListResponse(strategies=strategy_list)
+
+
+@router.post("/bulk-download/start", response_model=BulkDownloadStatus)
+async def start_bulk_download(request: BulkDownloadRequest):
+    """开始批量下载"""
+    task_id = request.task_id or "default"
+    success = bulk_download_manager.start_bulk_download(task_id)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Download is already running")
+    
+    return bulk_download_manager.get_all_status()
+
+
+@router.get("/bulk-download/status", response_model=BulkDownloadStatus)
+async def get_bulk_download_status():
+    """获取批量下载状态"""
+    return bulk_download_manager.get_all_status()
+
+
+@router.get("/database/info", response_model=DatabaseInfo)
+async def get_database_info():
+    """获取数据库信息"""
+    db = SessionLocal()
+    try:
+        # 获取最新数据日期
+        result = db.query(StockDaily.trade_date).order_by(
+            StockDaily.trade_date.desc()
+        ).first()
+        
+        latest_date = result[0].strftime("%Y-%m-%d") if result else None
+        
+        # 获取股票数量
+        stock_count = db.query(StockDaily.stock_code).distinct().count()
+        
+        # 获取数据范围
+        min_date_result = db.query(StockDaily.trade_date).order_by(
+            StockDaily.trade_date.asc()
+        ).first()
+        min_date = min_date_result[0].strftime("%Y-%m-%d") if min_date_result else None
+        
+        return DatabaseInfo(
+            latest_date=latest_date,
+            stock_count=stock_count,
+            min_date=min_date
+        )
+    finally:
+        db.close()

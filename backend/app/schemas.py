@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import date, datetime
 
 class StockDailyBase(BaseModel):
@@ -29,6 +29,19 @@ class BacktestRequest(BaseModel):
     end_date: date
     initial_capital: float = 100000.0
     ma_period: int = 5
+    strategy_name: str = "MA_Cross"
+    market_cap: Optional[float] = None
+
+class StrategyInfo(BaseModel):
+    name: str
+    params: Dict[str, Any]
+
+class SignalInfo(BaseModel):
+    breakout_days: List[Dict[str, Any]] = []
+    decay_reached_days: List[Dict[str, Any]] = []
+    signal_days: List[Dict[str, Any]] = []
+    volume_check_days: List[Dict[str, Any]] = []
+    price_check_days: List[Dict[str, Any]] = []
 
 class TradeRecordResponse(BaseModel):
     id: int
@@ -78,3 +91,23 @@ class BacktestDetailResponse(BaseModel):
     result: BacktestResultResponse
     equity_curve: List[EquityCurvePoint]
     kline_data: List[KLineData] = []
+    signals_info: Optional[SignalInfo] = None
+
+class StrategyListResponse(BaseModel):
+    strategies: List[StrategyInfo]
+
+
+class BulkDownloadRequest(BaseModel):
+    task_id: Optional[str] = None
+
+
+class BulkDownloadStatus(BaseModel):
+    is_downloading: bool
+    last_update_time: Optional[str]
+    download_status: Dict[str, Any] = {}
+
+
+class DatabaseInfo(BaseModel):
+    latest_date: Optional[str]
+    stock_count: int
+    min_date: Optional[str]
