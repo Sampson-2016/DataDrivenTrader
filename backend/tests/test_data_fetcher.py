@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from datetime import date, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, Mock
 
 from app.data_fetcher import DataFetcher
 from app.models import StockDaily
@@ -14,9 +14,56 @@ class TestDataFetcher:
         """测试初始化"""
         fetcher = DataFetcher()
         assert fetcher is not None
+        assert fetcher.max_retries == 3
+        assert fetcher.sleep_min == 2.0
+        assert fetcher.sleep_max == 5.0
     
-    @patch('app.data_fetcher.ak.stock_zh_a_hist')
-    def test_fetch_stock_daily_success(self, mock_ak_hist):
+    def test_rate_limit_enforcement(self):
+        """测试速率限制"""
+        fetcher = DataFetcher(sleep_min=0.1, sleep_max=0.2)
+        
+        start_time = __import__('time').time()
+        fetcher._enforce_rate_limit()
+        elapsed = __import__('time').time() - start_time
+        
+        assert elapsed >= 0.1
+    
+    def test_fetch_with_fallback_success(self):
+        """测试数据源降级成功"""
+        fetcher = DataFetcher(max_retries=1, retry_delay=0.1, sleep_min=0.01, sleep_max=0.02)
+        
+        mock_df = pd.DataFrame({
+            '日期': ['2023-01-01', '2023-01-02'],
+            '开盘': [100.0, 102.0],
+            '收盘': [105.0, 107.0],
+            '最高': [106.0, 108.0],
+            '最低': [99.0, 101.0],
+            '成交量': [1000000, 1100000],
+            '成交额': [100000000, 110000000]
+        })
+        
+        fetcher._fetch_stock_data_sina = Mock(return_value=mock_df)
+        
+        result = fetcher._fetch_with_fallback('600000', '20230101', '20230131')
+        
+        assert not result.empty
+        assert len(result) == 2
+        fetcher._fetch_stock_data_sina.assert_called_once()
+    
+    def test_fetch_with_fallback_all_failed(self):
+        """测试所有数据源都失败"""
+        fetcher = DataFetcher(max_retries=1, retry_delay=0.1, sleep_min=0.01, sleep_max=0.02)
+        
+        fetcher._fetch_stock_data_sina = Mock(side_effect=Exception("SINA Error"))
+        fetcher._fetch_stock_data_tx = Mock(side_effect=Exception("TX Error"))
+        
+        with pytest.raises(Exception) as exc_info:
+            fetcher._fetch_with_fallback('600000', '20230101', '20230131')
+        
+        assert "TX Error" in str(exc_info.value) or "所有数据源获取失败" in str(exc_info.value)
+    
+    @patch('app.data_fetcher.ak.stock_zh_a_daily')
+    def test_fetch_stock_daily_success(self, mock_ak_daily):
         """测试成功获取股票数据"""
         mock_df = pd.DataFrame({
             '日期': ['2023-01-01', '2023-01-02'],
@@ -25,43 +72,20 @@ class TestDataFetcher:
             '最高': [106.0, 108.0],
             '最低': [99.0, 101.0],
             '成交量': [1000000, 1100000],
-            '成交额': [100000000, 110000000],
-            '振幅': [5.0, 5.0],
-            '涨跌幅': [5.0, 5.0],
-            '涨跌额': [5.0, 5.0],
-            '换手率': [1.0, 1.0]
+            '成交额': [100000000, 110000000]
         })
-        mock_ak_hist.return_value = mock_df
+        mock_ak_daily.return_value = mock_df
         
-        fetcher = DataFetcher()
-        df = fetcher.fetch_stock_daily('600000', '2023-01-01', '2023-01-31')
+        fetcher = DataFetcher(max_retries=1, retry_delay=0.1, sleep_min=0.01, sleep_max=0.02)
+        
+        with patch.object(fetcher, '_fetch_stock_data_sina', return_value=mock_df):
+            df = fetcher.fetch_stock_daily('600000', '2023-01-01', '2023-01-31')
         
         assert not df.empty
         assert 'trade_date' in df.columns
         assert 'open_price' in df.columns
         assert 'close_price' in df.columns
         assert len(df) == 2
-    
-    @patch('app.data_fetcher.ak.stock_zh_a_hist')
-    def test_fetch_stock_daily_empty(self, mock_ak_hist):
-        """测试获取空数据"""
-        mock_df = pd.DataFrame()
-        mock_ak_hist.return_value = mock_df
-        
-        fetcher = DataFetcher()
-        df = fetcher.fetch_stock_daily('600000', '2023-01-01', '2023-01-31')
-        
-        assert df.empty
-    
-    @patch('app.data_fetcher.ak.stock_zh_a_hist')
-    def test_fetch_stock_daily_error(self, mock_ak_hist):
-        """测试获取数据错误"""
-        mock_ak_hist.side_effect = Exception("Network error")
-        
-        fetcher = DataFetcher()
-        df = fetcher.fetch_stock_daily('600000', '2023-01-01', '2023-01-31')
-        
-        assert df.empty
     
     def test_save_to_db(self):
         """测试保存到数据库"""

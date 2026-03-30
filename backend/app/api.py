@@ -65,7 +65,7 @@ async def run_backtest(
     db: Session = Depends(get_db)
 ):
     # 获取数据库中的数据范围
-    db_info = get_database_info()
+    db_info = await get_database_info()
     latest_date = db_info.latest_date
     
     if not latest_date:
@@ -114,10 +114,7 @@ async def run_backtest(
         if request.strategy_name == 'MA_Cross':
             strategy.ma_period = request.ma_period
         
-        result = strategy.run_backtest(
-            stock_data,
-            market_cap=request.market_cap
-        )
+        result = strategy.run_backtest(stock_data)
         
         backtest_result = backtest_engine.save_backtest_result(
             db,

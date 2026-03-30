@@ -18,11 +18,18 @@ class StockListFetcher:
             # 获取深市股票
             sz_stocks = ak.stock_info_sz_name_code()
             
+            # 统一列名：将沪市的列名转换为深市的格式
+            if '证券代码' in sh_stocks.columns and 'A股代码' not in sh_stocks.columns:
+                sh_stocks = sh_stocks.rename(columns={
+                    '证券代码': 'A股代码',
+                    '证券简称': 'A股名称'
+                })
+            
             # 合并
             all_stocks = pd.concat([sh_stocks, sz_stocks], ignore_index=True)
             
             # 过滤ST股票
-            code_col = 'A股代码' if 'A股代码' in all_stocks.columns else '证券代码'
+            code_col = 'A股代码'
             name_col = 'A股名称' if 'A股名称' in all_stocks.columns else '证券简称'
             
             non_st_stocks = all_stocks[
@@ -46,6 +53,8 @@ class StockListFetcher:
             return formatted_codes
         except Exception as e:
             print(f"Error fetching stock list: {e}")
+            import traceback
+            traceback.print_exc()
             return []
     
     def get_stock_names(self) -> Dict[str, str]:

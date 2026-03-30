@@ -789,7 +789,7 @@ export default {
         isDownloading.value = data.is_downloading
         
         if (data.is_downloading) {
-          setTimeout(checkDownloadStatus, 1000)
+          setTimeout(checkDownloadStatus, 3000)
         }
       } catch (error) {
         console.error('Check status error:', error)

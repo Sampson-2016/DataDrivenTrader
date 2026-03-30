@@ -142,6 +142,70 @@ npm run dev
 - **详情**: 鼠标悬停显示开高低收、成交量
 - **买卖点**: 红色B标记买入，蓝色S标记卖出
 
+## 数据库表结构
+
+系统使用MySQL存储数据，主要表结构如下：
+
+### stock_daily (股票日线数据)
+存储A股历史行情数据：
+- `id`: 主键
+- `stock_code`: 股票代码（如 600519）
+- `trade_date`: 交易日期
+- `open_price`: 开盘价
+- `high_price`: 最高价
+- `low_price`: 最低价
+- `close_price`: 收盘价
+- `volume`: 成交量
+- `amount`: 成交额（可选）
+- `amplitude`: 振幅（可选）
+- `change_pct`: 涨跌幅（可选）
+- `change_amount`: 涨跌额（可选）
+- `turnover`: 换手率（可选）
+- `created_at`: 创建时间
+- `updated_at`: 更新时间
+
+### backtest_result (回测结果)
+存储回测结果摘要：
+- `id`: 主键
+- `stock_code`: 股票代码
+- `strategy_name`: 策略名称
+- `start_date`: 回测开始日期
+- `end_date`: 回测结束日期
+- `initial_capital`: 初始资金
+- `final_capital`: 最终资金
+- `total_return`: 总收益率
+- `annual_return`: 年化收益率（可选）
+- `max_drawdown`: 最大回撤（可选）
+- `win_rate`: 胜率（可选）
+- `total_trades`: 总交易次数
+- `profit_trades`: 盈利次数
+- `loss_trades`: 亏损次数
+- `created_at`: 创建时间
+
+### trade_record (交易记录)
+存储每次交易的详细记录：
+- `id`: 主键
+- `backtest_id`: 关联的回测ID
+- `stock_code`: 股票代码
+- `trade_type`: 交易类型（buy/sell）
+- `trade_date`: 交易日期
+- `price`: 交易价格
+- `shares`: 交易股数
+- `amount`: 交易金额
+- `created_at`: 创建时间
+
+### data_update_log (数据更新日志)
+记录批量数据下载的历史：
+- `id`: 主键
+- `update_type`: 更新类型（bulk_download: 全量下载, single_stock: 单只股票）
+- `start_time`: 开始时间
+- `end_time`: 结束时间
+- `total_stocks`: 总股票数
+- `success_count`: 成功数量
+- `fail_count`: 失败数量
+- `message`: 备注信息
+- `created_at`: 创建时间
+
 ## 注意事项
 
 1. **数据获取**: 首次使用需要先点击"获取数据"，AkShare从网络获取数据可能需要几秒钟

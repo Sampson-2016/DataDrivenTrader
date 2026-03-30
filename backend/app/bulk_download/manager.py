@@ -125,7 +125,7 @@ class BulkDownloadManager:
                     print(f"下载 {stock_code} 失败: {e}")
                 
                 # 避免请求过快
-                time.sleep(0.1)
+                time.sleep(1)
             
             # 更新完成状态
             self._download_status[task_id]["status"] = "completed"
