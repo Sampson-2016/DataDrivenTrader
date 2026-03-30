@@ -114,7 +114,7 @@ async def run_backtest(
         if request.strategy_name == 'MA_Cross':
             strategy.ma_period = request.ma_period
         
-        result = strategy.run_backtest(stock_data)
+        result = strategy.run_backtest(stock_data, initial_capital=request.initial_capital, market_cap=request.market_cap)
         
         backtest_result = backtest_engine.save_backtest_result(
             db,
